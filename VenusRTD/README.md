@@ -15,7 +15,7 @@ optional arguments:
 
 Sample Usage:
 
-VenuServer.py --serial /dev/ttyS0 --itf ITF/AS5-Cricket.itf
+VenusServer.py --serial /dev/ttyS0 --itf ITF/AS5-Cricket.itf
 
 or
 
