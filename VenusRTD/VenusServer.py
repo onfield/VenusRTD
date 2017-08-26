@@ -161,7 +161,6 @@ def main():
     parser = argparse.ArgumentParser(description='Read Daktronics RTD.\nCopyright (c) 2017 OnField Technology, LLC.')
     parser.add_argument('--address', default='localhost', help='ip address.')
     parser.add_argument('--port', default='17410', help='ip port.')
-    parser.add_argument('--serial', default=None, help='Serial port. Overrides ip connection.')
     parser.add_argument('--itf', default='ITF/Code 27 Cricket Scoreboard.itf', help='Daktronics Input Template File.')
     args = parser.parse_args()
     
