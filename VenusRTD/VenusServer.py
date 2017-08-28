@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 # MIT License
 #
@@ -24,9 +24,12 @@
 
 import asyncore
 import socket
-import ConfigParser
+import configparser
 import sys
 import argparse
+import asyncio
+import serial_asyncio
+from functools import reduce
 
 # RTD Packet format -
 #
@@ -46,6 +49,7 @@ import argparse
 # SUM = sum of character values from header to (and including) <EOT> mod 256 as hex string
  
 SOH_C = b'\x01'
+STX_C = b'\x02'
 EOT_C = b'\x04'
 SYN_C = b'\x16'
 ETB_C = b'\x17'
@@ -54,23 +58,67 @@ dakSport = {}
 dakOffset = {}
 dakString = ''
 
+def displayITF(offset, limit):
+    while offset < limit and str(offset) in dakOffset:
+        name = dakOffset[str(offset)]
+        width = dakSport[name][1]
+        print("'{0}[{1}]'='{2}".format(name, offset, dakString[offset:offset+width]))            
+        offset += width
+            
+
+class VenusSerialHandler(asyncio.Protocol):
+    
+    def __init__(self):
+        self.rtd = b''
+        
+    def connection_made(self, transport):
+        self.transport = transport
+        print('port opened', transport)
+        transport.serial.rts = False
+
+    def data_received(self, data):
+        global dakSport
+        global dakString
+        global dakOffset
+               
+        print('data received', repr(data))
+        
+        self.rtd += data
+        end = self.rtd.find(ETB_C)
+        if end >= 0:
+            start = self.rtd.find(SYN_C)
+            
+            if end < start:
+                self.rtd = self.rtd[start:]
+                return
+                
+            if start >=0:
+                self.transport.write(SYN_C + b'20000000' + SOH_C + b'90000' + EOT_C + b'80' + ETB_C)
+                if len(self.rtd) > (end - start):
+                    checksum = reduce(lambda x,y:x+y, self.rtd[start+1:end - 2]) % 256
+                    offset = int(self.rtd[start + 16:start + 20])
+                    text = self.rtd[start + 21:end - 3]
+                    dakString = dakString[0:offset] + str(text) + dakString[offset + len(text):]
+                    print("Check sum = {0}, {1}, offset = {2}, text = '{3}'".format(format(checksum, '02X'), self.rtd[end-2:end], offset, text))
+                    if str(offset) in dakOffset:
+                        displayITF(offset, offset+len(text))
+                    else:
+                        print("Unknown offset {0}".format(offset))
+                        
+                    self.rtd = self.rtd[end+1:]
+                else:
+                    self.rtd = b''
+#                self.transport.close()
+
+    def connection_lost(self, exc):
+        print('port closed')
+        asyncio.get_event_loop().stop()
+
 class VenusHandler(asyncore.dispatcher_with_send):
 
-#    def __init__(self, sock):
-#        super(self.__class__, self).__init__(sock)       
-#        self.rtd = ''
-#        self.etb = False
-
     def checksum256(self, st):
-        return reduce(lambda x,y:x+y, map(ord, st)) % 256
+        return reduce(lambda x,y:x+y, st) % 256
 
-    def displayITF(self, offset, limit):
-        while offset < limit and str(offset) in dakOffset:
-            name = dakOffset[str(offset)]
-            width = dakSport[name][1]
-            print("'{0}[{1}]'='{2}".format(name, offset, dakString[offset:offset+width]))            
-            offset += width
-            
     def handle_read(self):
         self.rtd = b''
         self.etb = False
@@ -90,19 +138,13 @@ class VenusHandler(asyncore.dispatcher_with_send):
             
         if self.etb:
             if self.rtd[0] == SYN_C:
-                self.send(SYN_C)
-                self.send('20000000')
-                self.send(SOH_C)
-                self.send('90000')
-                self.send(EOT_C)
-                self.send('80')
-                self.send(ETB_C)
+                self.send(SYN_C + b'20000000' + SOH_C + b'90000' + EOT_C + b'80' + ETB_C)
                 checksum = self.checksum256(self.rtd[1:len(self.rtd)-3])
                 offset = int(self.rtd[16:20])
                 text = self.rtd[21:len(self.rtd)-4]
-                dakString = dakString[0:offset] + text + dakString[offset + len(text):]
+                dakString = dakString[0:offset] + str(text) + dakString[offset + len(text):]
                 if str(offset) in dakOffset:
-                    self.displayITF(offset, offset+len(text))
+                    displayITF(offset, offset+len(text))
                 else:
                     print("Unknown offset {0}".format(offset))
                     print("Check sum = {0}, {1}, offset = {2}, text = '{3}'".format(format(checksum, '02X'), self.rtd[-3:-1], offset, text))
@@ -112,6 +154,8 @@ class VenusServer(asyncore.dispatcher):
     def __init__(self, host, port, itf=None):
         asyncore.dispatcher.__init__(self)
         self.loadITF(itf)
+        if port == -1:
+            return
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind((host, port))
@@ -122,10 +166,10 @@ class VenusServer(asyncore.dispatcher):
         pair = self.accept()
         if pair is not None:
             sock, addr = pair
-            print 'Incoming connection from %s' % repr(addr)
+            print("Incoming connection from %s" % repr(addr))
             handler = VenusHandler(sock)
         else:
-            print 'Incoming connection not accepted!'
+            print('Incoming connection not accepted!')
             
         return handler
             
@@ -137,12 +181,12 @@ class VenusServer(asyncore.dispatcher):
         global dakString
         global dakOffset
                
-        config = ConfigParser.ConfigParser()
+        config = configparser.ConfigParser()
         try:
             config.read(itf)
             fields = int(config.get("TEMPLATE", "NUMFIELDS")) + 1
             dakSize = 0
-            for i in xrange(1, fields):
+            for i in range(1, fields):
                 field = "FIELD" + str(i)
                 length = config.get(field, "LENGTH")
                 name = config.get(field, "NAME")
@@ -161,24 +205,38 @@ def main():
     parser = argparse.ArgumentParser(description='Read Daktronics RTD.\nCopyright (c) 2017 OnField Technology, LLC.')
     parser.add_argument('--address', default='localhost', help='ip address.')
     parser.add_argument('--port', default='17410', help='ip port.')
+    parser.add_argument('--serial', default=None, help='Serial port. Overrides address/port')
     parser.add_argument('--itf', default='ITF/Code 27 Cricket Scoreboard.itf', help='Daktronics Input Template File.')
     args = parser.parse_args()
     
-    address = args.address
-    port = args.port
+    if args.serial is None:
+        address = args.address
+        port = args.port
+    else:
+        address = args.serial
+        port = "-1"
+        
     itf = args.itf
     
     server = VenusServer(address, int(port), itf)
     
-    print("Address {0}:{1}, ITF={2}".format(address, port, itf))
+    if args.serial is None:
+        print("Address {0}:{1}, ITF={2}".format(address, port, itf))
     
-    try:
-        asyncore.loop()
-    except KeyboardInterrupt:
-        print "\nCrtl+C pressed. Shutting down."
-        server.shutdown(socket.SHUT_RDWR)
-        server.close()
-        sys.exit()
-    
+        try:
+            asyncore.loop()
+        except KeyboardInterrupt:
+            print("\nCrtl+C pressed. Shutting down.")
+            server.shutdown(socket.SHUT_RDWR)
+            server.close()
+            sys.exit()
+    else:
+        print("Port {0}, ITF={1}".format(args.serial, itf))
+        loop = asyncio.get_event_loop()
+        coro = serial_asyncio.create_serial_connection(loop, VenusSerialHandler, args.serial, baudrate=19200)
+        loop.run_until_complete(coro)
+        loop.run_forever()
+        loop.close()
+        
 if __name__ == '__main__':
     main()    
